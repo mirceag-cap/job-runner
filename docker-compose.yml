@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16.8
+    pull_policy: never
+    container_name: jobrunner_postgres
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: jobrunner
+    ports:
+      - "55432:5432"
+    volumes:
+      - jobrunner_pgdata:/var/lib/postgresql/data
+
+volumes:
+  jobrunner_pgdata:

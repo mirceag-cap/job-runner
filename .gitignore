@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Virtual envs
+.venv/
+venv/
+
+# Environment variables / secrets
+.env
+**/.env
+
+# IDE
+.idea/
+.vscode/
+
+# OS files
+.DS_Store
+
+# Alembic
+**/alembic/__pycache__/
+
+# Docker volumes (local only)
+.docker-jobrunner/
