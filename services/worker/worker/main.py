@@ -1,6 +1,6 @@
 import asyncio
 import logging
-
+from datetime import datetime, timezone, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from worker.core.config import settings
@@ -36,7 +36,7 @@ async def process_one(db: AsyncSession) -> bool:
     except Exception as e:
         job.error = str(e)
         if job.attempts < job.max_attempts:
-            from datetime import datetime, timezone, timedelta
+
             from worker.core.retry import compute_backoff_seconds
 
             delay = compute_backoff_seconds(
@@ -48,6 +48,9 @@ async def process_one(db: AsyncSession) -> bool:
 
             job.status = JobStatus.queued
             job.run_after = datetime.now(timezone.utc) + timedelta(seconds=delay)
+            job.error = str(e)
+            job.last_error = str(e)
+            job.last_error_at = datetime.now(timezone.utc)
             log.warning(
                 "job_retry_scheduled",
                 extra={
@@ -61,6 +64,7 @@ async def process_one(db: AsyncSession) -> bool:
             )
         else:
             job.status = JobStatus.failed
+            job.failed_at = datetime.now(timezone.utc)
             log.error(
                 "job_failed",
                 extra={
