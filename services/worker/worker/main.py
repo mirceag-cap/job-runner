@@ -1,14 +1,12 @@
 import asyncio
 import logging
 
-from datetime import timedelta
-from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from worker.core.config import settings
 from worker.db.session import AsyncSessionLocal
 from worker.db.claim import claim_one_job
-from worker.jobs.handlers import handle_csv_summary
+from worker.jobs.handlers import handle_csv_summary, handle_always_fail
 from worker.models.job import JobStatus
 from worker.core.logging import setup_logging
 
@@ -24,6 +22,8 @@ async def process_one(db: AsyncSession) -> bool:
     try:
         if job.type == 'csv_summary':
             result = await handle_csv_summary(job)
+        elif job.type == 'always_fail':
+            result = await handle_always_fail(job)
         else:
             raise ValueError(f"Unknown job type: {job.type}")
 
@@ -32,19 +32,70 @@ async def process_one(db: AsyncSession) -> bool:
         job.error = None
         log.info("job_succeeded", extra={"job_id": str(job.id), "job_type": job.type})
 
+
     except Exception as e:
-        job.status = JobStatus.failed
-        job.error = str(e)
-        if job.attempts >= job.max_attempts:
-            job.status = JobStatus.failed
-            job.run_after = None
-            log.error("job_failed_permanent", extra={"job_id": str(job.id), "attempts": job.attempts, "error": str(e)})
+
+        job.error = str(e)  # Save error message so API can show why it failed
+
+        # If we still have retries left, re-queue the job with a delay
+
+        if job.attempts < job.max_attempts:
+
+            from datetime import datetime, timezone, timedelta  # Time utilities
+
+            from worker.core.retry import compute_backoff_seconds  # Backoff helper
+
+            delay = compute_backoff_seconds(  # Compute how long to wait before retrying
+
+                attempts=job.attempts,  # attempts is already incremented when claiming
+
+                base=settings.retry_base_delay_seconds,  # e.g. 2 seconds
+
+                cap=settings.retry_max_delay_seconds,  # e.g. 60 seconds
+
+            )
+
+            job.status = JobStatus.queued  # Put it back so it can be claimed later
+
+            job.run_after = datetime.now(timezone.utc) + timedelta(seconds=delay)  # Schedule the retry time
+
+            log.warning(
+                "job_retry_scheduled",
+                extra={
+                    "job_id": str(job.id),
+                    "attempts": job.attempts,
+
+                    "max_attempts": job.max_attempts,
+
+                    "delay_seconds": delay,
+
+                    "error": str(e),
+
+                },
+
+            )
+
         else:
-            job.status = JobStatus.queued
-            backoff_seconds = min(60, 2 ** job.attempts)
-            job.run_after = func.now() + timedelta(seconds=backoff_seconds)
-            log.error("job_failed_retrying", extra={"job_id": str(job.id), "attempts": job.attempts, "backoff_seconds": backoff_seconds, "error": str(e)})
-        log.error("job_failed", extra={"job_id": str(job.id), "error": str(e)})
+
+            job.status = JobStatus.failed
+
+            log.error(
+
+                "job_failed",
+
+                extra={
+
+                    "job_id": str(job.id),
+
+                    "attempts": job.attempts,
+
+                    "max_attempts": job.max_attempts,
+
+                    "error": str(e),
+
+                },
+
+            )
 
     return True
 
