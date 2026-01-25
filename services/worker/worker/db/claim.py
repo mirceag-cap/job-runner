@@ -1,5 +1,6 @@
 from sqlalchemy import select, or_, func
 from sqlalchemy.ext.asyncio import AsyncSession
+from datetime import datetime, timezone
 
 from worker.models.job import Job, JobStatus
 
@@ -7,8 +8,8 @@ async def claim_one_job(db: AsyncSession) -> Job | None:
     statement = (
         select(Job)
         .where(Job.status == JobStatus.queued)
-        .where(or_(Job.run_after.is_(None), Job.run_after <= func.now()))
-        .order_by(Job.created_at.asc())
+        .where((Job.run_after.is_(None)) | (Job.run_after <= datetime.now(timezone.utc)))
+        .order_by(Job.created_at)
         .with_for_update(skip_locked=True)
         .limit(1)
     )
