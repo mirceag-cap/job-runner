@@ -34,69 +34,42 @@ async def process_one(db: AsyncSession) -> bool:
 
 
     except Exception as e:
-
-        job.error = str(e)  # Save error message so API can show why it failed
-
-        # If we still have retries left, re-queue the job with a delay
-
+        job.error = str(e)
         if job.attempts < job.max_attempts:
+            from datetime import datetime, timezone, timedelta
+            from worker.core.retry import compute_backoff_seconds
 
-            from datetime import datetime, timezone, timedelta  # Time utilities
-
-            from worker.core.retry import compute_backoff_seconds  # Backoff helper
-
-            delay = compute_backoff_seconds(  # Compute how long to wait before retrying
-
-                attempts=job.attempts,  # attempts is already incremented when claiming
-
-                base=settings.retry_base_delay_seconds,  # e.g. 2 seconds
-
-                cap=settings.retry_max_delay_seconds,  # e.g. 60 seconds
-
+            delay = compute_backoff_seconds(
+                attempts=job.attempts,
+                base=settings.retry_base_delay_seconds,
+                cap=settings.retry_max_delay_seconds,
+                jitter_ratio=settings.retry_jitter_ratio
             )
 
-            job.status = JobStatus.queued  # Put it back so it can be claimed later
-
-            job.run_after = datetime.now(timezone.utc) + timedelta(seconds=delay)  # Schedule the retry time
-
+            job.status = JobStatus.queued
+            job.run_after = datetime.now(timezone.utc) + timedelta(seconds=delay)
             log.warning(
                 "job_retry_scheduled",
                 extra={
                     "job_id": str(job.id),
                     "attempts": job.attempts,
-
                     "max_attempts": job.max_attempts,
-
                     "delay_seconds": delay,
-
+                    "run_after": job.run_after.isoformat() if job.run_after else None,
                     "error": str(e),
-
                 },
-
             )
-
         else:
-
             job.status = JobStatus.failed
-
             log.error(
-
                 "job_failed",
-
                 extra={
-
                     "job_id": str(job.id),
-
                     "attempts": job.attempts,
-
                     "max_attempts": job.max_attempts,
-
                     "error": str(e),
-
                 },
-
             )
-
     return True
 
 async def worker_loop() -> None:

@@ -6,5 +6,6 @@ class Settings(BaseSettings):
     poll_interval_seconds: float = 1.0
     retry_base_delay_seconds: int = 2
     retry_max_delay_seconds: int = 60
+    retry_jitter_ratio: float = 0.3
 
 settings = Settings()
