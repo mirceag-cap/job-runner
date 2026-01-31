@@ -14,6 +14,9 @@ class JobOut(BaseModel):
     status: str
     result: dict | None = None
     error: str | None = None
+    failed_at: datetime | None = None
+    last_error: str | None = None
+    last_error_at: datetime | None = None
     attempts: int
     max_attempts: int
     run_after: datetime | None

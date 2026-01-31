@@ -1,7 +1,9 @@
 import asyncio
 import logging
-
+import time
+from datetime import datetime, timezone, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
+from prometheus_client import start_http_server
 
 from worker.core.config import settings
 from worker.db.session import AsyncSessionLocal
@@ -9,6 +11,7 @@ from worker.db.claim import claim_one_job
 from worker.jobs.handlers import handle_csv_summary, handle_always_fail
 from worker.models.job import JobStatus
 from worker.core.logging import setup_logging
+from worker.core.metrics import WORKER_JOB_CLAIMED_TOTAL, WORKER_JOB_DURATION_SECONDS, WORKER_JOB_SUCCEEDED_TOTAL, WORKER_JOB_FAILED_TOTAL, WORKER_JOB_RETRY_SCHEDULED_TOTAL
 
 log = logging.getLogger('worker')
 
@@ -16,6 +19,9 @@ async def process_one(db: AsyncSession) -> bool:
     job = await claim_one_job(db)
     if job is None:
         return False
+
+    WORKER_JOB_CLAIMED_TOTAL.labels(job_type=job.type).inc()
+    started = time.perf_counter()
 
     log.info("job_claimed", extra={"job_id": str(job.id), "job_type": job.type})
 
@@ -30,73 +36,57 @@ async def process_one(db: AsyncSession) -> bool:
         job.result = result
         job.status = JobStatus.succeeded
         job.error = None
+        WORKER_JOB_SUCCEEDED_TOTAL.labels(job_type=job.type).inc()
+        WORKER_JOB_DURATION_SECONDS.labels(job_type=job.type).observe(
+            time.perf_counter() - started
+        )
         log.info("job_succeeded", extra={"job_id": str(job.id), "job_type": job.type})
 
 
     except Exception as e:
-
-        job.error = str(e)  # Save error message so API can show why it failed
-
-        # If we still have retries left, re-queue the job with a delay
-
+        job.error = str(e)
         if job.attempts < job.max_attempts:
 
-            from datetime import datetime, timezone, timedelta  # Time utilities
+            from worker.core.retry import compute_backoff_seconds
 
-            from worker.core.retry import compute_backoff_seconds  # Backoff helper
-
-            delay = compute_backoff_seconds(  # Compute how long to wait before retrying
-
-                attempts=job.attempts,  # attempts is already incremented when claiming
-
-                base=settings.retry_base_delay_seconds,  # e.g. 2 seconds
-
-                cap=settings.retry_max_delay_seconds,  # e.g. 60 seconds
-
+            delay = compute_backoff_seconds(
+                attempts=job.attempts,
+                base=settings.retry_base_delay_seconds,
+                cap=settings.retry_max_delay_seconds,
+                jitter_ratio=settings.retry_jitter_ratio
             )
 
-            job.status = JobStatus.queued  # Put it back so it can be claimed later
-
-            job.run_after = datetime.now(timezone.utc) + timedelta(seconds=delay)  # Schedule the retry time
-
+            job.status = JobStatus.queued
+            job.run_after = datetime.now(timezone.utc) + timedelta(seconds=delay)
+            job.error = str(e)
+            job.last_error = str(e)
+            job.last_error_at = datetime.now(timezone.utc)
+            WORKER_JOB_RETRY_SCHEDULED_TOTAL.labels(job_type=job.type).inc()
             log.warning(
                 "job_retry_scheduled",
                 extra={
                     "job_id": str(job.id),
                     "attempts": job.attempts,
-
                     "max_attempts": job.max_attempts,
-
                     "delay_seconds": delay,
-
+                    "run_after": job.run_after.isoformat() if job.run_after else None,
                     "error": str(e),
-
                 },
-
             )
-
         else:
-
             job.status = JobStatus.failed
-
+            job.failed_at = datetime.now(timezone.utc)
+            job.run_after = None
+            WORKER_JOB_FAILED_TOTAL.labels(job_type=job.type).inc()
             log.error(
-
                 "job_failed",
-
                 extra={
-
                     "job_id": str(job.id),
-
                     "attempts": job.attempts,
-
                     "max_attempts": job.max_attempts,
-
                     "error": str(e),
-
                 },
-
             )
-
     return True
 
 async def worker_loop() -> None:
@@ -110,6 +100,7 @@ async def worker_loop() -> None:
 
 def main() -> None:
     setup_logging()
+    start_http_server(settings.metrics_port)
     asyncio.run(worker_loop())
 
 if __name__ == "__main__":
