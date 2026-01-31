@@ -1,0 +1,19 @@
+groups:
+- name: job-runner-alerts
+  rules:
+  - alert: JobSuccessRateLow
+    expr: |
+      (
+        sum(rate(worker_job_succeeded_total[5m]))
+        /
+        clamp_min(
+          sum(rate(worker_job_succeeded_total[5m])) + sum(rate(worker_job_failed_total[5m])),
+          1e-9
+        )
+      ) < 0.99
+    for: 2m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Job success rate below 99%"
+      description: "Job success rate has been below 99% for 2 minutes."

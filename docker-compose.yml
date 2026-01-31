@@ -12,5 +12,35 @@ services:
     volumes:
       - jobrunner_pgdata:/var/lib/postgresql/data
 
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: jobrunner_prometheus
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: jobrunner_grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    volumes:
+      - jobrunner_grafana_data:/var/lib/grafana
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: jobrunner_alertmanager
+    volumes:
+      - ./prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+    ports:
+      - "9093:9093"
+
 volumes:
-  jobrunner_pgdata:
+    jobrunner_pgdata:
+    jobrunner_grafana_data:
