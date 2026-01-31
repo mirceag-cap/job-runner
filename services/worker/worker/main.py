@@ -1,7 +1,9 @@
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
+from prometheus_client import start_http_server
 
 from worker.core.config import settings
 from worker.db.session import AsyncSessionLocal
@@ -9,6 +11,7 @@ from worker.db.claim import claim_one_job
 from worker.jobs.handlers import handle_csv_summary, handle_always_fail
 from worker.models.job import JobStatus
 from worker.core.logging import setup_logging
+from worker.core.metrics import WORKER_JOB_CLAIMED_TOTAL, WORKER_JOB_DURATION_SECONDS, WORKER_JOB_SUCCEEDED_TOTAL, WORKER_JOB_FAILED_TOTAL, WORKER_JOB_RETRY_SCHEDULED_TOTAL
 
 log = logging.getLogger('worker')
 
@@ -16,6 +19,9 @@ async def process_one(db: AsyncSession) -> bool:
     job = await claim_one_job(db)
     if job is None:
         return False
+
+    WORKER_JOB_CLAIMED_TOTAL.labels(job_type=job.type).inc()
+    started = time.perf_counter()
 
     log.info("job_claimed", extra={"job_id": str(job.id), "job_type": job.type})
 
@@ -30,6 +36,10 @@ async def process_one(db: AsyncSession) -> bool:
         job.result = result
         job.status = JobStatus.succeeded
         job.error = None
+        WORKER_JOB_SUCCEEDED_TOTAL.labels(job_type=job.type).inc()
+        WORKER_JOB_DURATION_SECONDS.labels(job_type=job.type).observe(
+            time.perf_counter() - started
+        )
         log.info("job_succeeded", extra={"job_id": str(job.id), "job_type": job.type})
 
 
@@ -51,6 +61,7 @@ async def process_one(db: AsyncSession) -> bool:
             job.error = str(e)
             job.last_error = str(e)
             job.last_error_at = datetime.now(timezone.utc)
+            WORKER_JOB_RETRY_SCHEDULED_TOTAL.labels(job_type=job.type).inc()
             log.warning(
                 "job_retry_scheduled",
                 extra={
@@ -65,6 +76,8 @@ async def process_one(db: AsyncSession) -> bool:
         else:
             job.status = JobStatus.failed
             job.failed_at = datetime.now(timezone.utc)
+            job.run_after = None
+            WORKER_JOB_FAILED_TOTAL.labels(job_type=job.type).inc()
             log.error(
                 "job_failed",
                 extra={
@@ -87,6 +100,7 @@ async def worker_loop() -> None:
 
 def main() -> None:
     setup_logging()
+    start_http_server(settings.metrics_port)
     asyncio.run(worker_loop())
 
 if __name__ == "__main__":

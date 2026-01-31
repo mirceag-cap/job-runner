@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import JSON, DateTime, Enum, String, Text, func, Integer, text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 class Base(DeclarativeBase):
@@ -29,7 +29,7 @@ class Job(Base):
         index=True
     )
 
-    result: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    result: Mapped[dict] = mapped_column(JSONB, nullable=True, default=dict)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("5"))
     run_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
