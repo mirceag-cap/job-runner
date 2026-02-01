@@ -11,7 +11,13 @@ from worker.db.claim import claim_one_job
 from worker.jobs.handlers import handle_csv_summary, handle_always_fail
 from worker.models.job import JobStatus
 from worker.core.logging import setup_logging
-from worker.core.metrics import WORKER_JOB_CLAIMED_TOTAL, WORKER_JOB_DURATION_SECONDS, WORKER_JOB_SUCCEEDED_TOTAL, WORKER_JOB_FAILED_TOTAL, WORKER_JOB_RETRY_SCHEDULED_TOTAL
+from worker.core.metrics import (
+    WORKER_JOB_CLAIMED_TOTAL,
+    WORKER_JOB_DURATION_SECONDS,
+    WORKER_JOB_SUCCEEDED_TOTAL,
+    WORKER_JOB_FAILED_TOTAL,
+    WORKER_JOB_RETRY_SCHEDULED_TOTAL
+)
 
 log = logging.getLogger('worker')
 
@@ -33,20 +39,29 @@ async def process_one(db: AsyncSession) -> bool:
         else:
             raise ValueError(f"Unknown job type: {job.type}")
 
+        now = datetime.now(timezone.utc)
         job.result = result
         job.status = JobStatus.succeeded
+        job.succeeded_at = now
+        job.failed_at = None
+        job.run_after = None
         job.error = None
+        job.last_error = None
+        job.last_error_at = None
+
         WORKER_JOB_SUCCEEDED_TOTAL.labels(job_type=job.type).inc()
         WORKER_JOB_DURATION_SECONDS.labels(job_type=job.type).observe(
             time.perf_counter() - started
         )
+
         log.info("job_succeeded", extra={"job_id": str(job.id), "job_type": job.type})
 
 
     except Exception as e:
-        job.error = str(e)
+        now = datetime.now(timezone.utc)
+        err = str(e)
+        job.error = err
         if job.attempts < job.max_attempts:
-
             from worker.core.retry import compute_backoff_seconds
 
             delay = compute_backoff_seconds(
@@ -58,10 +73,13 @@ async def process_one(db: AsyncSession) -> bool:
 
             job.status = JobStatus.queued
             job.run_after = datetime.now(timezone.utc) + timedelta(seconds=delay)
-            job.error = str(e)
-            job.last_error = str(e)
-            job.last_error_at = datetime.now(timezone.utc)
+            job.last_error = err
+            job.last_error_at = now
+            job.failed_at = None
+            job.succeeded_at = None
+
             WORKER_JOB_RETRY_SCHEDULED_TOTAL.labels(job_type=job.type).inc()
+
             log.warning(
                 "job_retry_scheduled",
                 extra={
@@ -75,8 +93,12 @@ async def process_one(db: AsyncSession) -> bool:
             )
         else:
             job.status = JobStatus.failed
-            job.failed_at = datetime.now(timezone.utc)
+            job.failed_at = now
             job.run_after = None
+            job.succeeded_at = None
+
+            job.last_error = err
+            job.last_error_at = now
             WORKER_JOB_FAILED_TOTAL.labels(job_type=job.type).inc()
             log.error(
                 "job_failed",
