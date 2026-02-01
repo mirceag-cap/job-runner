@@ -1,4 +1,5 @@
 services:
+  # --- Database ---
   postgres:
     image: postgres:16.8
     pull_policy: never
@@ -11,6 +12,39 @@ services:
       - "55432:5432"
     volumes:
       - jobrunner_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d jobrunner"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # --- API ---
+  api:
+    build:
+      context: ./services/api
+      dockerfile: Dockerfile
+    container_name: jobrunner_api
+    environment:
+      DATABASE_URL: postgresql+asyncpg://app:app@postgres:5432/jobrunner
+    ports:
+      - "127.0.0.1:8001:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # --- Worker ---
+  worker:
+    build:
+      context: ./services/worker
+      dockerfile: Dockerfile
+    container_name: jobrunner_worker
+    environment:
+      DATABASE_URL: postgresql+asyncpg://app:app@postgres:5432/jobrunner
+    ports:
+      - "9101:9101"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   prometheus:
     image: prom/prometheus:latest
@@ -20,6 +54,9 @@ services:
       - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
     ports:
       - "9090:9090"
+    depends_on:
+      - api
+      - worker
 
   grafana:
     image: grafana/grafana:latest
@@ -40,6 +77,8 @@ services:
       - "--config.file=/etc/alertmanager/alertmanager.yml"
     ports:
       - "9093:9093"
+    depends_on:
+      - prometheus
 
 volumes:
     jobrunner_pgdata:
