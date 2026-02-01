@@ -13,6 +13,9 @@ from app.models.job import Job, JobStatus
 from app.schemas.job import JobCreate, JobOut
 from app.schemas.result import JobResultOut
 from app.core.metrics import JOB_CREATED_TOTAL, JOB_GET_TOTAL, API_REQUEST_DURATION_SECONDS
+from app.core.queue import enqueue_job
+from app.core.redis import redis_client, QUEUE_KEY
+import json
 
 router = APIRouter()
 
@@ -48,6 +51,7 @@ async def create_job(
     try:
         await db.commit()
         await db.refresh(job)
+        await enqueue_job(str(job.id))
         JOB_CREATED_TOTAL.labels(job_type=job_in.type).inc()
         API_REQUEST_DURATION_SECONDS.labels(method="POST", path="/jobs").observe(
             time.perf_counter() - start

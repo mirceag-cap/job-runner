@@ -26,6 +26,8 @@ services:
     container_name: jobrunner_api
     environment:
       DATABASE_URL: postgresql+asyncpg://app:app@postgres:5432/jobrunner
+      REDIS_URL: redis://redis:6379/0
+      QUEUE_NAME: jobrunner:queue
     ports:
       - "127.0.0.1:8001:8001"
     depends_on:
@@ -40,6 +42,8 @@ services:
     container_name: jobrunner_worker
     environment:
       DATABASE_URL: postgresql+asyncpg://app:app@postgres:5432/jobrunner
+      REDIS_URL: redis://redis:6379/0
+      QUEUE_NAME: jobrunner:queue
     ports:
       - "9101:9101"
     depends_on:
@@ -80,6 +84,21 @@ services:
     depends_on:
       - prometheus
 
+  redis:
+    image: redis:7-alpine
+    container_name: jobrunner_redis
+    ports:
+      - "6389:6379"
+    command: [ "redis-server", "--appendonly", "yes" ]
+    volumes:
+      - jobrunner_redis_data:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
 volumes:
     jobrunner_pgdata:
     jobrunner_grafana_data:
+    jobrunner_redis_data:
