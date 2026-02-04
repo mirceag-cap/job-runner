@@ -1,9 +1,6 @@
 import os
 from redis.asyncio import Redis
-
-REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
-QUEUE_NAME = os.getenv("QUEUE_NAME", "jobrunner:queue")
-
+from worker.core.redis import REDIS_URL, QUEUE_NAME
 redis = Redis.from_url(REDIS_URL, decode_responses=True)
 
 async def dequeue_job_id(timeout_seconds: int = 30) -> str | None:
