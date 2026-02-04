@@ -14,8 +14,6 @@ from app.schemas.job import JobCreate, JobOut
 from app.schemas.result import JobResultOut
 from app.core.metrics import JOB_CREATED_TOTAL, JOB_GET_TOTAL, API_REQUEST_DURATION_SECONDS
 from app.core.queue import enqueue_job
-from app.core.redis import redis_client, QUEUE_KEY
-import json
 
 router = APIRouter()
 
@@ -69,6 +67,9 @@ async def create_job(
 
         if existing is None:
             raise HTTPException(status_code=500, detail="Idempotency conflict but job not found")
+
+        if existing.status in (JobStatus.queued, JobStatus.running):
+            await enqueue_job(str(existing.id))
 
         API_REQUEST_DURATION_SECONDS.labels(method="POST", path="/jobs").observe(
             time.perf_counter() - start

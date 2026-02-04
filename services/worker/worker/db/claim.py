@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,10 +9,13 @@ from worker.models.job import Job, JobStatus
 async def claim_job_by_id(db: AsyncSession, job_id: str) -> Job | None:
     now = datetime.now(timezone.utc)
 
+    job_uuid = uuid.UUID(job_id)
+
     stmt = (
         select(Job)
-        .where(Job.id == job_id)
+        .where(Job.id == job_uuid)
         .where(Job.status == JobStatus.queued)
+        .where((Job.run_after.is_(None)) | (Job.run_after <= now))
         .with_for_update(skip_locked=True)
     )
 

@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from prometheus_client import start_http_server
 
 from worker.core.config import settings
-from worker.core.redis import redis_client, QUEUE_KEY
+from worker.core.redis import redis_client, QUEUE_NAME, reserve_job_id, ack_job_id
 from worker.db.session import AsyncSessionLocal
 from worker.db.claim import claim_job_by_id
 from worker.jobs.handlers import handle_csv_summary, handle_always_fail
@@ -22,6 +22,7 @@ from worker.core.metrics import (
 )
 from worker.core.retry import compute_backoff_seconds
 import time
+from worker.reaper import requeue_stuck_jobs
 
 log = logging.getLogger("worker")
 
@@ -94,7 +95,7 @@ async def process_job(db: AsyncSession, job_id: str) -> None:
             # sleep in a background task and push back.
             async def requeue_later():
                 await asyncio.sleep(delay)
-                await redis_client.rpush(QUEUE_KEY, str(job.id))
+                await redis_client.rpush(QUEUE_NAME, str(job.id))
 
             asyncio.create_task(requeue_later())
 
@@ -112,20 +113,40 @@ async def process_job(db: AsyncSession, job_id: str) -> None:
 
 async def worker_loop() -> None:
     while True:
-        item = await redis_client.blpop(QUEUE_KEY, timeout=5)
-        if item is None:
+        # reserve one job reliably (queue -> processing)
+        raw = await reserve_job_id(timeout_seconds=5)
+        if raw is None:
             continue
 
-        _, raw = item
         try:
-            job_id = parse_queue_item(raw)
+            job_id = normalize_job_id(raw)
         except Exception:
+            # remove from processing so it doesn't block.
             log.exception("bad_queue_message", extra={"raw": raw})
+            await ack_job_id(raw)
             continue
 
-        async with AsyncSessionLocal() as db:
-            async with db.begin():
-                await process_job(db, job_id)
+        try:
+            # If worker crashes before commit, changes rollback and job remains in processing.
+            async with AsyncSessionLocal() as db:
+                async with db.begin():
+                    await process_job(db, job_id)  # your real processing function
+
+            # Ack only after successful DB commit.
+            await ack_job_id(job_id)
+
+        except Exception:
+            # Do NOT ack on failure.
+            # Job stays in processing and can be requeued.
+            log.exception("job_processing_crashed", extra={"job_id": job_id})
+            await asyncio.sleep(1)
+
+def normalize_job_id(raw: str) -> str:
+    """
+        - Validates raw is a UUID
+        - Returns normalized UUID string
+        """
+    return str(uuid.UUID(raw))
 
 def parse_queue_item(raw: str) -> str:
     raw = raw.strip()
@@ -137,11 +158,21 @@ def parse_queue_item(raw: str) -> str:
     # validate UUID and normalize
     return str(uuid.UUID(raw))
 
+async def main_async() -> None:
+    """
+    Top-level async runner.
+      - worker_loop(): reserves and processes jobs
+      - requeue_stuck_jobs(): repairs jobs stuck in processing after crashes
+    """
+    await asyncio.gather(
+        worker_loop(),         # Concept: main worker consumer loop
+        requeue_stuck_jobs(),  # Concept: reaper loop running in parallel
+    )
 
 def main() -> None:
     setup_logging()
     start_http_server(settings.metrics_port)
-    asyncio.run(worker_loop())
+    asyncio.run(main_async())
 
 
 if __name__ == "__main__":
